@@ -12,6 +12,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
+
+#include <climits>
 #include <cstring>
 #include <utility>
 
@@ -32,6 +35,60 @@ namespace {
 constexpr int kTensorInput = 0;
 constexpr int kElementShapeInput = 1;
 constexpr int kListOut = 0;
+
+void CopyPackedTensor(const TfLiteTensor* src, TfLiteTensor* dst,
+                      int src_row_offset, int num_elements) {
+  int bit_width = TfLiteTypeGetSizeBits(src->type);
+  const uint8_t* src_raw = reinterpret_cast<const uint8_t*>(src->data.raw);
+  uint8_t* dst_raw = reinterpret_cast<uint8_t*>(dst->data.raw);
+
+  // Number of elements that can be packed into one byte.
+  int elements_per_byte = CHAR_BIT / bit_width;
+  // Mask to extract the elements from the source tensor.
+  uint8_t mask = (1 << bit_width) - 1;
+
+  // If the source row is byte-aligned, copy the bytes directly, otherwise it
+  // is needed to do some bit-fiddling to extract the elements.
+  if (src_row_offset % elements_per_byte == 0) {
+    int num_bytes_to_copy = num_elements / elements_per_byte;
+    // Copy the whole bytes that can be copied.
+    if (num_bytes_to_copy > 0) {
+      memcpy(dst_raw, src_raw + (src_row_offset / elements_per_byte),
+             num_bytes_to_copy);
+    }
+    // Copy the remaining bits, if any.
+    int tail_elements = num_elements % elements_per_byte;
+    if (tail_elements > 0) {
+      int src_byte_idx =
+          (src_row_offset / elements_per_byte) + num_bytes_to_copy;
+      // Create and apply a mask to the source byte to avoid reading out of
+      // bounds.
+      uint8_t tail_mask = (1 << (tail_elements * bit_width)) - 1;
+      dst_raw[num_bytes_to_copy] = src_raw[src_byte_idx] & tail_mask;
+    }
+  } else {
+    // If the source row is not byte-aligned, it is needed to do some
+    // bit-fiddling to extract the elements.
+    for (int b = 0; b < dst->bytes; ++b) {
+      uint8_t dst_byte = 0;
+      for (int j = 0; j < elements_per_byte; ++j) {
+        int dst_idx = b * elements_per_byte + j;
+        if (dst_idx < num_elements) {
+          int src_idx = src_row_offset + dst_idx;
+          uint8_t src_byte = src_raw[src_idx / elements_per_byte];
+          // Shift the byte to get the element in the least significant bits and
+          // apply a mask to extract the element.
+          uint8_t val =
+              (src_byte >> ((src_idx % elements_per_byte) * bit_width)) & mask;
+          // Shift the element to its final position in the destination byte
+          // and OR it with the destination byte.
+          dst_byte |= (val & mask) << (j * bit_width);
+        }
+      }
+      dst_raw[b] = dst_byte;
+    }
+  }
+}
 
 TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
@@ -108,6 +165,14 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
   TF_LITE_ENSURE(context, arr->Resize(list_len));
 
+  int num_elements_per_row = 1;
+  for (int j = 0; j < element_shape_for_tensors->size; ++j) {
+    num_elements_per_row *= element_shape_for_tensors->data[j];
+  }
+  const bool is_packed_type =
+      (tensor_input->type == kTfLiteInt4 ||
+       tensor_input->type == kTfLiteUInt4 || tensor_input->type == kTfLiteInt2);
+
   // Copy each row of input into the elements of the new list.
   size_t data_offset = 0;
   for (int i = 0; i < list_len; ++i) {
@@ -120,12 +185,17 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     if (tensor_to_set->bytes > 0) {
       TF_LITE_ENSURE(context, tensor_to_set->data.raw != nullptr);
       TF_LITE_ENSURE(context, tensor_input->data.raw != nullptr);
-      TF_LITE_ENSURE(context,
-                     tensor_to_set->bytes <= tensor_input->bytes - data_offset);
-      memcpy(tensor_to_set->data.raw, tensor_input->data.raw + data_offset,
-             tensor_to_set->bytes);
+      if (is_packed_type) {
+        CopyPackedTensor(tensor_input, tensor_to_set.get(),
+                         i * num_elements_per_row, num_elements_per_row);
+      } else {
+        TF_LITE_ENSURE(
+            context, tensor_to_set->bytes <= tensor_input->bytes - data_offset);
+        memcpy(tensor_to_set->data.raw, tensor_input->data.raw + data_offset,
+               tensor_to_set->bytes);
+        data_offset += tensor_to_set->bytes;
+      }
     }
-    data_offset += tensor_to_set->bytes;
 
     TF_LITE_ENSURE(context, arr->Set(i, std::move(tensor_to_set)));
   }
