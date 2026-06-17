@@ -30,7 +30,9 @@
 #include "litert/cc/litert_buffer_ref.h"
 #include "litert/cc/litert_common.h"
 #include "litert/cc/litert_element_type.h"
+#include "litert/cc/litert_environment.h"
 #include "litert/cc/litert_expected.h"
+#include "litert/cc/litert_model_types.h"
 #include "litert/core/model/model.h"
 #include "litert/core/util/flatbuffer_tools.h"
 #include "litert/test/common.h"
@@ -47,6 +49,9 @@ namespace {
 
 // copybara:uncomment_begin(google_only)
 // TEST(CcExtendedModelTest, CreateFromMemoryAllocation) {
+//   auto env = Environment::Create({});
+//   ASSERT_TRUE(env);
+// 
 //   auto runtime = testing::MakeRuntimeFromTestFile("one_mul.tflite");
 //   ASSERT_TRUE(runtime);
 // 
@@ -54,7 +59,7 @@ namespace {
 //   auto allocation = std::make_unique<tflite::MemoryAllocation>(
 //       model_buffer.Data(), model_buffer.Size(), tflite::DefaultErrorReporter());
 // 
-//   auto model = ExtendedModel::CreateFromAllocation(std::move(allocation));
+//   auto model = ExtendedModel::CreateFromAllocation(*env, std::move(allocation));
 //   ASSERT_TRUE(model);
 // 
 //   auto subgraph = model->MainSubgraph();
@@ -190,7 +195,7 @@ TEST(CcTensorTest, QuantizationNone) {
   litert_tensor.Qparams().first = kLiteRtQuantizationNone;
 
   Tensor tensor(&litert_tensor);
-  EXPECT_EQ(tensor.QTypeId(), kLiteRtQuantizationNone);
+  EXPECT_EQ(tensor.QTypeId(), QuantizationTypeId::None);
   EXPECT_FALSE(tensor.HasQuantization());
 }
 
@@ -202,7 +207,7 @@ TEST(CcTensorTest, QuantizationPerTensor) {
   litert_tensor.SetQarams(MakePerTensorQuantization(kScale, kZeroPoint));
 
   Tensor tensor(&litert_tensor);
-  ASSERT_EQ(tensor.QTypeId(), kLiteRtQuantizationPerTensor);
+  ASSERT_EQ(tensor.QTypeId(), QuantizationTypeId::PerTensor);
   ASSERT_TRUE(tensor.HasQuantization());
 
   const auto per_tensor_quantization = tensor.PerTensorQuantization();
@@ -222,7 +227,7 @@ TEST(CcTensorTest, QuantizationPerChannel) {
   litert_tensor.SetQarams(per_channel);
 
   Tensor tensor(&litert_tensor);
-  ASSERT_EQ(tensor.QTypeId(), kLiteRtQuantizationPerChannel);
+  ASSERT_EQ(tensor.QTypeId(), QuantizationTypeId::PerChannel);
   ASSERT_TRUE(tensor.HasQuantization());
 
   const auto per_channel_quantization = tensor.PerChannelQuantization();

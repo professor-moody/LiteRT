@@ -183,6 +183,7 @@ LiteRtGetBatchMatmulAdjXOption
 LiteRtGetBatchMatmulAdjYOption
 LiteRtGetBatchMatmulAsymmetricQuantizeInputOption
 LiteRtGetBlockWiseQuantization
+LiteRtGetCompiledModelEnvironment
 LiteRtGetCompiledModelInputBufferRequirements
 LiteRtGetCompiledModelInputTensorLayout
 LiteRtGetCompiledModelOutputBufferRequirements
@@ -250,6 +251,7 @@ LiteRtGetMaxPool2dStrideWOption
 LiteRtGetMeanKeepDimsOption
 LiteRtGetMetric
 LiteRtGetMirrorPadModeOption
+LiteRtGetModelEnvironment
 LiteRtGetModelMetadata
 LiteRtGetModelSignature
 LiteRtGetModelSubgraph
@@ -380,7 +382,6 @@ LiteRtRunCompiledModelAsyncWithOptions
 LiteRtRunCompiledModelAsyncWithSchedulingInfo
 LiteRtRunCompiledModelWithOptions
 LiteRtRunCompiledModelWithSchedulingInfo
-
 LiteRtSerializeModel
 LiteRtSerializeModelWithSignatures
 LiteRtSetAcceleratorGetHardwareSupport
@@ -403,3 +404,4 @@ LiteRtUnlockTensorBuffer
 LiteRtUnwrapDelegate
 LiteRtWaitEvent
 LiteRtWrapDelegate
+kLiteRtRuntimeBuiltin
