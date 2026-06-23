@@ -28,6 +28,46 @@
 #include <windows.h>
 #endif  // !defined(_WIN32)
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/val.h>
+
+namespace litert_web {
+emscripten::val GetStreamWeightsCallback();
+}
+
+// clang-format off
+EM_ASYNC_JS(
+    int, CallStreamWeightsOnWeb,
+    (const int* tfl_ids, const uint32_t* wgpu_buffers, const double* offsets,
+     const double* lengths, int count),
+    {
+      const callback = Module.getStreamWeightsCallback();
+      if (typeof callback !== 'function') {
+        console.error(
+            'Stream weights callback is not registered or is not a function');
+        return 1;
+      }
+      const tflIdsArray = new Int32Array(Module.HEAP32.buffer, tfl_ids, count);
+      const wgpuBuffersArray =
+          new Uint32Array(Module.HEAPU32.buffer, wgpu_buffers, count);
+      const offsetsArray =
+          new Float64Array(Module.HEAPF64.buffer, offsets, count);
+      const lengthsArray =
+          new Float64Array(Module.HEAPF64.buffer, lengths, count);
+      try {
+        await callback(
+            new Int32Array(tflIdsArray), new Uint32Array(wgpuBuffersArray),
+            new Float64Array(offsetsArray), new Float64Array(lengthsArray));
+      } catch (e) {
+        console.error('Error in streamWeightsOnWeb:', e);
+        return 1;
+      }
+      return 0;
+    });
+// clang-format on
+#endif  // __EMSCRIPTEN__
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -771,11 +811,11 @@ class LiteRtWeightLoader : public WeightLoader {
       LiteRtRuntimeContext* runtime_context, const tflite::Model* model,
       std::optional<std::string> model_directory,
       std::unique_ptr<litert::ScopedWeightSource> scoped_weight_source,
-      WeightInMemoryMap weight_in_memory_map = {})
+      const WeightInMemoryMap* weight_in_memory_map = nullptr)
       : runtime_context_(runtime_context),
         model_directory_(std::move(model_directory)),
         scoped_weight_source_(std::move(scoped_weight_source)),
-        weight_in_memory_map_(std::move(weight_in_memory_map)) {
+        weight_in_memory_map_(weight_in_memory_map) {
     ParseFlatBuffer(*model, infos_, entries_, canonical_external_buffer_ids_,
                     group_paths_);
     if (scoped_weight_source_) {
@@ -871,6 +911,40 @@ class LiteRtWeightLoader : public WeightLoader {
     return &(*it->second.access);
   }
 
+#ifdef __EMSCRIPTEN__
+  absl::Status UploadWeightsOnWeb(const absl::flat_hash_map<int, wgpu::Buffer>&
+                                      tfl_id_to_wgpu_buffer) override {
+    std::vector<int> tfl_ids;
+    std::vector<uint32_t> wgpu_buffers;
+    std::vector<double> offsets;
+    std::vector<double> lengths;
+    tfl_ids.reserve(tfl_id_to_wgpu_buffer.size());
+    wgpu_buffers.reserve(tfl_id_to_wgpu_buffer.size());
+    offsets.reserve(tfl_id_to_wgpu_buffer.size());
+    lengths.reserve(tfl_id_to_wgpu_buffer.size());
+    for (const auto& [id, buffer] : tfl_id_to_wgpu_buffer) {
+      tfl_ids.push_back(id);
+      wgpu_buffers.push_back(reinterpret_cast<uint32_t>(buffer.Get()));
+      auto entry_it = entries_.find(static_cast<uint32_t>(id));
+      if (entry_it != entries_.end()) {
+        const auto& info = infos_[entry_it->second.info_index];
+        offsets.push_back(static_cast<double>(info.offset));
+        lengths.push_back(static_cast<double>(info.length));
+      } else {
+        return absl::InternalError("Could not find WeightInfo for buffer ID.");
+      }
+    }
+
+    int result =
+        CallStreamWeightsOnWeb(tfl_ids.data(), wgpu_buffers.data(),
+                               offsets.data(), lengths.data(), tfl_ids.size());
+    if (result != 0) {
+      return absl::InternalError("Failed to stream weights on web");
+    }
+    return absl::OkStatus();
+  }
+#endif  // __EMSCRIPTEN__
+
   absl::Status DiscardExternalWeightByBuffer(
       uint32_t external_buffer_id) override {
     auto it = entries_.find(GetCanonicalExternalBufferId(external_buffer_id));
@@ -900,9 +974,9 @@ class LiteRtWeightLoader : public WeightLoader {
       const LiteRtWeightInfo& info) {
     // Check weight in memory map first.
     auto path_it = group_paths_.find(info.group_id);
-    if (path_it != group_paths_.end()) {
-      auto mem_it = weight_in_memory_map_.find(path_it->second);
-      if (mem_it != weight_in_memory_map_.end()) {
+    if (path_it != group_paths_.end() && weight_in_memory_map_ != nullptr) {
+      auto mem_it = weight_in_memory_map_->find(path_it->second);
+      if (mem_it != weight_in_memory_map_->end()) {
         return WeightSource{.kind = WeightSource::Kind::kHostMemory,
                             .host_memory = mem_it->second};
       }
@@ -934,7 +1008,8 @@ class LiteRtWeightLoader : public WeightLoader {
   absl::flat_hash_map<uint32_t, std::string> group_paths_;
   std::unique_ptr<litert::ScopedWeightSource> scoped_weight_source_;
   absl::flat_hash_map<uint32_t, litert::ScopedWeightSection> group_sections_;
-  WeightInMemoryMap weight_in_memory_map_;
+  const WeightInMemoryMap* weight_in_memory_map_;  // Client provided, not owned
+
   mutable std::vector<WeightInfo> weight_info_cache_;
 };
 
@@ -944,7 +1019,7 @@ std::unique_ptr<WeightLoader> CreateLiteRtWeightLoader(
     LiteRtRuntimeContext* runtime_context, const tflite::Model* flatbuffer,
     std::optional<std::string> model_directory,
     std::unique_ptr<litert::ScopedWeightSource> scoped_weight_source,
-    WeightInMemoryMap weight_in_memory_map) {
+    const WeightInMemoryMap* weight_in_memory_map) {
   return std::make_unique<LiteRtWeightLoader>(
       runtime_context, flatbuffer, std::move(model_directory),
       std::move(scoped_weight_source), std::move(weight_in_memory_map));

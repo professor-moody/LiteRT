@@ -25,6 +25,9 @@
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
+#ifdef __EMSCRIPTEN__
+#include "ml_drift/webgpu/webgpu_headers.h"  // from @ml_drift
+#endif  // __EMSCRIPTEN__
 #include "litert/c/internal/litert_runtime_context.h"
 #include "litert/c/litert_common.h"
 #include "litert/cc/internal/scoped_weight_source.h"
@@ -135,6 +138,14 @@ class WeightLoader {
   virtual const WeightAccess* GetExternalWeightByBuffer(
       uint32_t external_buffer_id) const = 0;
 
+#ifdef __EMSCRIPTEN__
+  virtual absl::Status UploadWeightsOnWeb(
+      const absl::flat_hash_map<int, wgpu::Buffer>& tfl_id_to_wgpu_buffer) {
+    return absl::UnimplementedError(
+        "UploadWeightsOnWeb is not implemented by default.");
+  }
+#endif  // __EMSCRIPTEN__
+
   // Marks the host mapping for the external weight tensor as discardable.
   virtual absl::Status DiscardExternalWeightByBuffer(
       uint32_t external_buffer_id) = 0;
@@ -193,7 +204,7 @@ std::unique_ptr<WeightLoader> CreateLiteRtWeightLoader(
     LiteRtRuntimeContext* runtime_context, const tflite::Model* flatbuffer,
     std::optional<std::string> model_directory = std::nullopt,
     std::unique_ptr<litert::ScopedWeightSource> scoped_weight_source = nullptr,
-    WeightInMemoryMap weight_in_memory_map = {});
+    const WeightInMemoryMap* weight_in_memory_map = nullptr);
 
 }  // namespace weight_loader
 
