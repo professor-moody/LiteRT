@@ -20,6 +20,9 @@ limitations under the License.
 #include <ostream>
 #include <type_traits>
 
+#include <iterator>
+#include <utility>
+
 #include "tensor/internal/fp16.h"
 
 namespace litert::tensor {
@@ -145,12 +148,88 @@ namespace internal {
 template <Type t, class T, uint64_t Bits = 8 * sizeof(T)>
 struct StorageImpl {
   static_assert((Bits & (Bits - 1)) == 0, "Bits must be a power of 2.");
+  static_assert(Bits != 0, "Bits must be non-zero.");
+  static_assert(!std::is_same_v<T, void>, "Storage type cannot be void.");
   using type = T;
   static constexpr Type value = t;
+  static constexpr uint64_t kNumElements = 8 * sizeof(T) / Bits;
   static constexpr uint64_t BufferSize(size_t count) {
     return (Bits * count + 7) / 8;
   }
 };
+
+// Helpers to extract/set individual logical elements from packed bitfield
+// storage. For unpacked types (kNumElements == 1), these are trivial identity
+// wrappers. For packed types, they index into the bitfield members.
+
+// --- GetPackedValue: unpacked types (kNumElements == 1) ---
+template <class T>
+constexpr auto GetPackedValue(const T& val, size_t /*index*/) {
+  return val;
+}
+
+// --- GetPackedValue: int4_t ---
+inline int8_t GetPackedValue(const int4_t& val, size_t index) {
+  return index == 0 ? val.a : val.b;
+}
+
+// --- GetPackedValue: uint4_t ---
+inline uint8_t GetPackedValue(const uint4_t& val, size_t index) {
+  return index == 0 ? val.a : val.b;
+}
+
+// --- GetPackedValue: int2_t ---
+inline int8_t GetPackedValue(const int2_t& val, size_t index) {
+  switch (index) {
+    case 0: return val.a;
+    case 1: return val.b;
+    case 2: return val.c;
+    default: return val.d;
+  }
+}
+
+// --- SetPackedValue: unpacked types (kNumElements == 1) ---
+template <class T, class U>
+constexpr void SetPackedValue(T& dest, size_t /*index*/, U&& val) {
+  dest = static_cast<T>(std::forward<U>(val));
+}
+
+// --- SetPackedValue: int4_t ---
+template <class U>
+inline void SetPackedValue(int4_t& dest, size_t index, U&& val) {
+  if (index == 0) {
+    dest.a = static_cast<int8_t>(std::forward<U>(val));
+  } else {
+    dest.b = static_cast<int8_t>(std::forward<U>(val));
+  }
+}
+
+// --- SetPackedValue: uint4_t ---
+template <class U>
+inline void SetPackedValue(uint4_t& dest, size_t index, U&& val) {
+  if (index == 0) {
+    dest.a = static_cast<uint8_t>(std::forward<U>(val));
+  } else {
+    dest.b = static_cast<uint8_t>(std::forward<U>(val));
+  }
+}
+
+// --- SetPackedValue: int2_t ---
+template <class U>
+inline void SetPackedValue(int2_t& dest, size_t index, U&& val) {
+  switch (index) {
+    case 0: dest.a = static_cast<int8_t>(std::forward<U>(val)); break;
+    case 1: dest.b = static_cast<int8_t>(std::forward<U>(val)); break;
+    case 2: dest.c = static_cast<int8_t>(std::forward<U>(val)); break;
+    default: dest.d = static_cast<int8_t>(std::forward<U>(val)); break;
+  }
+}
+
+template <class T>
+using ElementOf = std::decay_t<decltype(GetPackedValue(std::declval<T>(), 0))>;
+
+template <Type t>
+using ElementType = ElementOf<typename NativeStorage<t>::type>;
 
 }  // namespace internal
 
@@ -158,7 +237,10 @@ struct StorageImpl {
 // an error.
 template <>
 struct NativeStorage<Type::kUnknown>
-    : internal::StorageImpl<Type::kUnknown, void, /*Bits=*/0> {};
+    : internal::StorageImpl<Type::kUnknown, struct Void, /*Bits=*/1> {
+  static constexpr uint64_t kNumElements = 0;
+  static constexpr uint64_t BufferSize(size_t count) { return 0; }
+};
 
 template <>
 struct NativeStorage<Type::kI2>
@@ -275,18 +357,56 @@ struct ApiType<double> : internal::StorageImpl<Type::kFP64, double> {};
 template <>
 struct ApiType<bool> : internal::StorageImpl<Type::kBOOL, bool> {};
 
+// Forward declaration.
 template <Type out, Type in, class = void>
-struct Conversion {
-  static constexpr typename NativeStorage<out>::type Call(
-      typename NativeStorage<in>::type val) {
-    return static_cast<typename NativeStorage<out>::type>(val);
+struct Conversion;
+
+// RangedConversion provides a generic RangeCall that works for all type
+// combinations—packed or unpacked—by using GetPackedValue/SetPackedValue.
+// Individual Conversion specializations inherit from this and only override
+// Call.
+template <Type out, Type in>
+struct RangedConversion {
+  using OutElement = internal::ElementType<out>;
+  using InElement = internal::ElementType<in>;
+
+  static constexpr OutElement Call(InElement val) {
+    return static_cast<OutElement>(val);
+  }
+
+  template <class DestRange, class SrcRange>
+  static void RangeCall(DestRange&& dest, SrcRange&& src) {
+    constexpr uint64_t in_knum = NativeStorage<in>::kNumElements;
+    constexpr uint64_t out_knum = NativeStorage<out>::kNumElements;
+    auto src_it = std::begin(src);
+    auto src_end = std::end(src);
+    auto dest_it = std::begin(dest);
+    auto dest_end = std::end(dest);
+    size_t src_index = 0;  // logical element index within current packed src
+    size_t dest_index = 0;  // logical element index within current packed dest
+    while (src_it != src_end && dest_it != dest_end) {
+      auto val = internal::GetPackedValue(*src_it, src_index);
+      internal::SetPackedValue(*dest_it, dest_index,
+                               Conversion<out, in>::Call(val));
+      if (++src_index >= in_knum) {
+        ++src_it;
+        src_index = 0;
+      }
+      if (++dest_index >= out_knum) {
+        ++dest_it;
+        dest_index = 0;
+      }
+    }
   }
 };
 
+template <Type out, Type in, class>
+struct Conversion : RangedConversion<out, in> {};
+
 template <Type inout>
-struct Conversion<inout, inout, void> {
-  static constexpr typename NativeStorage<inout>::type Call(
-      typename NativeStorage<inout>::type val) {
+struct Conversion<inout, inout, void> : RangedConversion<inout, inout> {
+  using Element = internal::ElementType<inout>;
+  static constexpr Element Call(Element val) {
     return val;
   }
 };
@@ -294,9 +414,11 @@ struct Conversion<inout, inout, void> {
 template <Type type>
 struct Conversion<
     Type::kBF16, type,
-    std::enable_if_t<type != Type::kFP32 && type != Type::kBF16>> {
+    std::enable_if_t<type != Type::kFP32 && type != Type::kBF16>>
+    : RangedConversion<Type::kBF16, type> {
+  using InElement = internal::ElementType<type>;
   static constexpr typename NativeStorage<Type::kBF16>::type Call(
-      typename NativeStorage<type>::type val) {
+      InElement val) {
     return Conversion<Type::kBF16, Type::kFP32>::Call(static_cast<float>(val));
   }
 };
@@ -304,8 +426,10 @@ struct Conversion<
 template <Type type>
 struct Conversion<
     type, Type::kBF16,
-    std::enable_if_t<type != Type::kFP32 && type != Type::kBF16>> {
-  static constexpr typename NativeStorage<type>::type Call(
+    std::enable_if_t<type != Type::kFP32 && type != Type::kBF16>>
+    : RangedConversion<type, Type::kBF16> {
+  using OutElement = internal::ElementType<type>;
+  static constexpr OutElement Call(
       typename NativeStorage<Type::kBF16>::type val) {
     return Conversion<type, Type::kFP32>::Call(static_cast<float>(val));
   }
@@ -314,9 +438,11 @@ struct Conversion<
 template <Type type>
 struct Conversion<Type::kFP16, type,
                   std::enable_if_t<type != Type::kFP32 && type != Type::kFP16 &&
-                                   type != Type::kBF16>> {
+                                   type != Type::kBF16>>
+    : RangedConversion<Type::kFP16, type> {
+  using InElement = internal::ElementType<type>;
   static constexpr typename NativeStorage<Type::kFP16>::type Call(
-      typename NativeStorage<type>::type val) {
+      InElement val) {
     return Conversion<Type::kFP16, Type::kFP32>::Call(static_cast<float>(val));
   }
 };
@@ -324,8 +450,10 @@ struct Conversion<Type::kFP16, type,
 template <Type type>
 struct Conversion<type, Type::kFP16,
                   std::enable_if_t<type != Type::kFP32 && type != Type::kFP16 &&
-                                   type != Type::kBF16>> {
-  static constexpr typename NativeStorage<type>::type Call(
+                                   type != Type::kBF16>>
+    : RangedConversion<type, Type::kFP16> {
+  using OutElement = internal::ElementType<type>;
+  static constexpr OutElement Call(
       typename NativeStorage<Type::kFP16>::type val) {
     return Conversion<type, Type::kFP32>::Call(static_cast<float>(val));
   }

@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensor/datatypes.h"
 
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -85,6 +87,64 @@ TEST(ConvertTest, FP16ToFP16Compiles) {
 TEST(ConvertTest, BF16ToBF16Compiles) {
   const bf16_t bf16_val = 23.;
   EXPECT_THAT(ConvertTo<Type::kBF16>(bf16_val).val, Eq(bf16_val.val));
+}
+
+TEST(RangeConvertTest, UnpackedToUnpacked) {
+  std::vector<float> src = {1.0f, 2.5f, -3.0f};
+  std::vector<bf16_t> dest(3);
+  Conversion<Type::kBF16, Type::kFP32>::RangeCall(dest, src);
+  EXPECT_THAT(static_cast<float>(dest[0]), Eq(1.0f));
+  EXPECT_THAT(static_cast<float>(dest[1]), Eq(2.5f));
+  EXPECT_THAT(static_cast<float>(dest[2]), Eq(-3.0f));
+}
+
+TEST(RangeConvertTest, PackedI4ToUnpacked) {
+  std::vector<int4_t> src(2);
+  src[0].a = -5;
+  src[0].b = 3;
+  src[1].a = 7;
+  src[1].b = -2;
+  std::vector<float> dest(4);
+  Conversion<Type::kFP32, Type::kI4>::RangeCall(dest, src);
+  EXPECT_THAT(dest, ::testing::ElementsAre(-5.0f, 3.0f, 7.0f, -2.0f));
+}
+
+TEST(RangeConvertTest, UnpackedToPackedI4) {
+  std::vector<int32_t> src = {-5, 3, 7, -2};
+  std::vector<int4_t> dest(2);
+  Conversion<Type::kI4, Type::kI32>::RangeCall(dest, src);
+  EXPECT_THAT(dest[0].a, Eq(-5));
+  EXPECT_THAT(dest[0].b, Eq(3));
+  EXPECT_THAT(dest[1].a, Eq(7));
+  EXPECT_THAT(dest[1].b, Eq(-2));
+}
+
+TEST(RangeConvertTest, PackedI2ToUnpackedBF16) {
+  std::vector<int2_t> src(1);
+  src[0].a = -1;
+  src[0].b = 0;
+  src[0].c = 1;
+  src[0].d = -2;
+  std::vector<bf16_t> dest(4);
+  Conversion<Type::kBF16, Type::kI2>::RangeCall(dest, src);
+  EXPECT_THAT(static_cast<float>(dest[0]), Eq(-1.0f));
+  EXPECT_THAT(static_cast<float>(dest[1]), Eq(0.0f));
+  EXPECT_THAT(static_cast<float>(dest[2]), Eq(1.0f));
+  EXPECT_THAT(static_cast<float>(dest[3]), Eq(-2.0f));
+}
+
+TEST(RangeConvertTest, PackedToPackedI4ToI2) {
+  std::vector<int4_t> src(2);
+  src[0].a = -1;
+  src[0].b = 0;
+  src[1].a = 1;
+  src[1].b = -2;
+  std::vector<int2_t> dest(1);
+  Conversion<Type::kI2, Type::kI4>::RangeCall(dest, src);
+  EXPECT_THAT(dest[0].a, Eq(-1));
+  EXPECT_THAT(dest[0].b, Eq(0));
+  EXPECT_THAT(dest[0].c, Eq(1));
+  EXPECT_THAT(dest[0].d, Eq(-2));
 }
 
 }  // namespace
