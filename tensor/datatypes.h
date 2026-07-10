@@ -49,6 +49,10 @@ struct int2_t {
   int8_t b : 2;
   int8_t c : 2;
   int8_t d : 2;
+
+  friend bool operator==(const int2_t lhs, const int2_t rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b && lhs.c == rhs.c && lhs.d == rhs.d;
+  }
 };
 
 static_assert(sizeof(int2_t) == sizeof(int8_t));
@@ -57,6 +61,10 @@ static_assert(alignof(int2_t) == alignof(int8_t));
 struct int4_t {
   int8_t a : 4;
   int8_t b : 4;
+
+  friend bool operator==(const int4_t lhs, const int4_t rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b;
+  }
 };
 
 static_assert(sizeof(int4_t) == sizeof(int8_t));
@@ -65,6 +73,10 @@ static_assert(alignof(int4_t) == alignof(int8_t));
 struct uint4_t {
   uint8_t a : 4;
   uint8_t b : 4;
+
+  friend bool operator==(const uint4_t lhs, const uint4_t rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b;
+  }
 };
 
 static_assert(sizeof(uint4_t) == sizeof(uint8_t));
@@ -145,8 +157,11 @@ namespace internal {
 template <Type t, class T, uint64_t Bits = 8 * sizeof(T)>
 struct StorageImpl {
   static_assert((Bits & (Bits - 1)) == 0, "Bits must be a power of 2.");
+  static_assert(Bits != 0, "Bits must be non-zero.");
+  static_assert(!std::is_same_v<T, void>, "Storage type cannot be void.");
   using type = T;
   static constexpr Type value = t;
+  static constexpr uint64_t kNumElements = 8 * sizeof(T) / Bits;
   static constexpr uint64_t BufferSize(size_t count) {
     return (Bits * count + 7) / 8;
   }
@@ -157,8 +172,12 @@ struct StorageImpl {
 // We're defining this for consistency. Actually using it for anything else is
 // an error.
 template <>
-struct NativeStorage<Type::kUnknown>
-    : internal::StorageImpl<Type::kUnknown, void, /*Bits=*/0> {};
+struct NativeStorage<Type::kUnknown> {
+  using type = void;
+  static constexpr Type value = Type::kUnknown;
+  static constexpr uint64_t kNumElements = 0;
+  static constexpr uint64_t BufferSize(size_t count) { return 0; }
+};
 
 template <>
 struct NativeStorage<Type::kI2>
