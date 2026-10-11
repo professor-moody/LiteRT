@@ -364,6 +364,30 @@ TEST(BasicFlatBufferModel, TestZeroSubgraphs) {
   ASSERT_NE(InterpreterBuilder(*m, TrivialResolver())(&interpreter), kTfLiteOk);
 }
 
+TEST(BasicFlatBufferModel, TestMissingSubgraphs) {
+  flatbuffers::FlatBufferBuilder builder;
+  std::vector<flatbuffers::Offset<OperatorCode>> operator_codes;
+  std::vector<flatbuffers::Offset<Buffer>> buffers = {
+      CreateBufferDirect(builder)};
+  auto model = CreateModelDirect(builder, TFLITE_SCHEMA_VERSION,
+                                 &operator_codes, /*subgraphs=*/nullptr,
+                                 "missing-subgraphs test", &buffers);
+  FinishModelBuffer(builder, model);
+
+  const uint8_t* buffer = builder.GetBufferPointer();
+  const size_t size = builder.GetSize();
+  flatbuffers::Verifier verifier(buffer, size);
+  ASSERT_TRUE(VerifyModelBuffer(verifier));
+
+  auto m = FlatBufferModel::BuildFromBuffer(
+      reinterpret_cast<const char*>(buffer), size);
+  ASSERT_TRUE(m);
+  std::unique_ptr<Interpreter> interpreter;
+  EXPECT_NE(InterpreterBuilder(*m, TrivialResolver())(&interpreter),
+            kTfLiteOk);
+  EXPECT_EQ(interpreter, nullptr);
+}
+
 TEST(BasicFlatBufferModel, TestMultipleSubgraphs) {
   auto m = FlatBufferModel::BuildFromFile(
       "tflite/testdata/2_subgraphs.bin");

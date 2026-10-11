@@ -967,6 +967,12 @@ TfLiteStatus InterpreterBuilder::operator()(
   auto* subgraphs = model_->subgraphs();
   auto* buffers = model_->buffers();
 
+  if (!subgraphs) {
+    TF_LITE_REPORT_ERROR(error_reporter_,
+                         "No subgraphs in the model.\n");
+    return kTfLiteError;
+  }
+
   if (subgraphs->empty()) {
     TF_LITE_REPORT_ERROR(error_reporter_, "No subgraph in the model.\n");
     return kTfLiteError;
